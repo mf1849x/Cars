@@ -76,6 +76,11 @@ textarea {
   gap: 12px;
 }
 
+.nav-button {
+  border: 0;
+  cursor: pointer;
+}
+
 .main-nav a,
 .button {
   border-radius: 999px;
@@ -119,7 +124,9 @@ textarea {
 .car-card,
 .details-card,
 .form-panel,
-.admin-row {
+.admin-row,
+.auth-card,
+.user-panel {
   background: rgba(255, 255, 255, 0.68);
   border: 1px solid rgba(22, 33, 38, 0.08);
   border-radius: 28px;
@@ -150,6 +157,47 @@ textarea {
 .filter-panel,
 .form-panel {
   padding: 24px;
+}
+
+.auth-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  gap: 24px;
+  align-items: start;
+}
+
+.auth-intro {
+  padding: 20px 8px 0 0;
+}
+
+.auth-intro h1 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2.4rem, 4.5vw, 4rem);
+  line-height: 0.95;
+  margin: 0 0 16px;
+}
+
+.auth-card {
+  padding: 24px;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-loading {
+  margin: 0;
+  padding: 24px 0;
+  color: #5c6971;
+}
+
+.user-panel {
+  padding: 18px 20px;
+}
+
+.user-panel h3 {
+  margin: 0 0 6px;
 }
 
 .hero-panel ul {
@@ -331,6 +379,7 @@ textarea {
 
   .site-header,
   .hero,
+  .auth-layout,
   .inventory-layout,
   .admin-layout {
     grid-template-columns: 1fr;

@@ -1,9 +1,16 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const express = require("express");
 const Database = require("better-sqlite3");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
 const PORT = process.env.PORT || 3001;
+const JWT_SECRET = process.env.JWT_SECRET || "cars-auth-dev-secret";
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "24h";
+const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL || "admin@example.com";
+const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD || crypto.randomBytes(12).toString("base64url");
 const dataDir = path.join(__dirname, "data");
 const dbPath = path.join(dataDir, "cars.db");
 const distDir = path.join(__dirname, "..", "dist");
@@ -28,6 +35,14 @@ db.exec(`
     fuelType TEXT NOT NULL,
     transmission TEXT NOT NULL,
     description TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
@@ -132,6 +147,20 @@ if (existingCars === 0) {
   insertMany(seedCars);
 }
 
+const existingUsers = db.prepare("SELECT COUNT(*) AS count FROM users").get().count;
+
+if (existingUsers === 0) {
+  const adminPasswordHash = bcrypt.hashSync(DEFAULT_ADMIN_PASSWORD, 12);
+
+  db.prepare(`
+    INSERT INTO users (email, password_hash, role)
+    VALUES (?, ?, 'admin')
+  `).run(DEFAULT_ADMIN_EMAIL, adminPasswordHash);
+
+  console.log(`Seeded default admin user: ${DEFAULT_ADMIN_EMAIL}`);
+  console.log(`Default admin password: ${DEFAULT_ADMIN_PASSWORD}`);
+}
+
 const carColumns = [
   "make",
   "model",
@@ -168,10 +197,299 @@ function normalizeCarPayload(payload) {
   return required;
 }
 
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function serializeUser(user) {
+  if (!user) {
+    return null;
+  }
+
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    created_at: user.created_at,
+  };
+}
+
+function signToken(user) {
+  return jwt.sign(
+    {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+    },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN }
+  );
+}
+
+function getUserByEmail(email) {
+  return db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+}
+
+function getUserById(id) {
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+}
+
+function createUser({ email, password, role = "user" }) {
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!normalizedEmail) {
+    throw new Error("Email is required.");
+  }
+
+  if (typeof password !== "string" || password.length < 8) {
+    throw new Error("Password must be at least 8 characters long.");
+  }
+
+  if (!["admin", "user"].includes(role)) {
+    throw new Error("Role must be either admin or user.");
+  }
+
+  if (getUserByEmail(normalizedEmail)) {
+    const error = new Error("A user with that email already exists.");
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const passwordHash = bcrypt.hashSync(password, 12);
+  const result = db
+    .prepare(
+      `
+        INSERT INTO users (email, password_hash, role)
+        VALUES (@email, @passwordHash, @role)
+      `
+    )
+    .run({
+      email: normalizedEmail,
+      passwordHash,
+      role,
+    });
+
+  return getUserById(result.lastInsertRowid);
+}
+
+function updateUserById(id, { email, password, role }) {
+  const existingUser = getUserById(id);
+
+  if (!existingUser) {
+    const error = new Error("User not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const normalizedEmail = normalizeEmail(email ?? existingUser.email);
+  const nextRole = role ?? existingUser.role;
+
+  if (!normalizedEmail) {
+    throw new Error("Email is required.");
+  }
+
+  if (!["admin", "user"].includes(nextRole)) {
+    throw new Error("Role must be either admin or user.");
+  }
+
+  const emailOwner = getUserByEmail(normalizedEmail);
+
+  if (emailOwner && Number(emailOwner.id) !== Number(id)) {
+    const error = new Error("A user with that email already exists.");
+    error.statusCode = 409;
+    throw error;
+  }
+
+  if (existingUser.role === "admin" && nextRole !== "admin" && countAdminUsers() <= 1) {
+    throw new Error("At least one admin account must remain.");
+  }
+
+  const nextPasswordHash =
+    typeof password === "string" && password.length > 0 ? bcrypt.hashSync(password, 12) : existingUser.password_hash;
+
+  db.prepare(
+    `
+      UPDATE users
+      SET email = @email,
+          password_hash = @passwordHash,
+          role = @role
+      WHERE id = @id
+    `
+  ).run({
+    id,
+    email: normalizedEmail,
+    passwordHash: nextPasswordHash,
+    role: nextRole,
+  });
+
+  return getUserById(id);
+}
+
+function authenticateUser(email, password) {
+  const user = getUserByEmail(normalizeEmail(email));
+
+  if (!user) {
+    return null;
+  }
+
+  if (!bcrypt.compareSync(password, user.password_hash)) {
+    return null;
+  }
+
+  return user;
+}
+
+function verifyToken(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+
+  if (!authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ message: "Missing authentication token." });
+  }
+
+  const token = authHeader.slice("Bearer ".length).trim();
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    const user = getUserById(payload.sub);
+
+    if (!user) {
+      return res.status(401).json({ message: "Invalid authentication token." });
+    }
+
+    req.auth = payload;
+    req.user = serializeUser(user);
+
+    return next();
+  } catch (error) {
+    return res.status(401).json({ message: "Invalid or expired authentication token." });
+  }
+}
+
+function requireRole(...allowedRoles) {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ message: "Authentication required." });
+    }
+
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ message: "You do not have permission to access this resource." });
+    }
+
+    return next();
+  };
+}
+
+function createAuthResponse(user) {
+  const token = signToken(user);
+
+  return {
+    token,
+    user: serializeUser(user),
+  };
+}
+
+function getAllUsers() {
+  return db
+    .prepare("SELECT id, email, role, created_at FROM users ORDER BY datetime(created_at) DESC, id DESC")
+    .all();
+}
+
+function countAdminUsers() {
+  return db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'").get().count;
+}
+
 function createApp() {
   const app = express();
 
   app.use(express.json());
+
+  app.post("/api/auth/register", (req, res) => {
+    try {
+      const payload = req.body || {};
+      const user = createUser({
+        email: payload.email,
+        password: payload.password,
+        role: "user",
+      });
+
+      return res.status(201).json(createAuthResponse(user));
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ message: error.message });
+    }
+  });
+
+  app.post("/api/auth/login", (req, res) => {
+    const payload = req.body || {};
+    const user = authenticateUser(payload.email, payload.password);
+
+    if (!user) {
+      return res.status(401).json({ message: "Invalid email or password." });
+    }
+
+    return res.json(createAuthResponse(user));
+  });
+
+  app.post("/api/auth/logout", (req, res) => {
+    return res.status(204).send();
+  });
+
+  app.get("/api/auth/me", verifyToken, (req, res) => {
+    return res.json({ user: req.user });
+  });
+
+  app.post("/api/users", verifyToken, requireRole("admin"), (req, res) => {
+    try {
+      const payload = req.body || {};
+      const user = createUser({
+        email: payload.email,
+        password: payload.password,
+        role: payload.role || "user",
+      });
+
+      return res.status(201).json({ user: serializeUser(user) });
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ message: error.message });
+    }
+  });
+
+  app.get("/api/users", verifyToken, requireRole("admin"), (req, res) => {
+    return res.json({ users: getAllUsers() });
+  });
+
+  app.put("/api/users/:id", verifyToken, requireRole("admin"), (req, res) => {
+    try {
+      const payload = req.body || {};
+      const user = updateUserById(req.params.id, {
+        email: payload.email,
+        password: payload.password,
+        role: payload.role,
+      });
+
+      return res.json({ user: serializeUser(user) });
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ message: error.message });
+    }
+  });
+
+  app.delete("/api/users/:id", verifyToken, requireRole("admin"), (req, res) => {
+    const targetUser = getUserById(req.params.id);
+
+    if (!targetUser) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    if (Number(targetUser.id) === Number(req.user.id)) {
+      return res.status(400).json({ message: "You cannot delete your own account while signed in." });
+    }
+
+    if (targetUser.role === "admin" && countAdminUsers() <= 1) {
+      return res.status(400).json({ message: "At least one admin account must remain." });
+    }
+
+    db.prepare("DELETE FROM users WHERE id = ?").run(req.params.id);
+
+    return res.status(204).send();
+  });
 
   app.get("/api/cars", (req, res) => {
     const conditions = [];
@@ -248,7 +566,7 @@ function createApp() {
     return res.json(car);
   });
 
-  app.post("/api/cars", (req, res) => {
+  app.post("/api/cars", verifyToken, requireRole("admin"), (req, res) => {
     try {
       const car = normalizeCarPayload(req.body);
       const result = db
@@ -267,7 +585,7 @@ function createApp() {
     }
   });
 
-  app.put("/api/cars/:id", (req, res) => {
+  app.put("/api/cars/:id", verifyToken, requireRole("admin"), (req, res) => {
     const existing = db.prepare("SELECT * FROM cars WHERE id = ?").get(req.params.id);
 
     if (!existing) {
@@ -299,7 +617,7 @@ function createApp() {
     }
   });
 
-  app.delete("/api/cars/:id", (req, res) => {
+  app.delete("/api/cars/:id", verifyToken, requireRole("admin"), (req, res) => {
     const result = db.prepare("DELETE FROM cars WHERE id = ?").run(req.params.id);
 
     if (result.changes === 0) {
