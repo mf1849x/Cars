@@ -68,6 +68,27 @@ Add JWT-based authentication with two roles (Admin + User):
     - Protect routes: `/admin` requires admin role
     - Handle redirect logic if token expires
 
+### Phase 4: Password Reset Flow
+13. **Add password reset request endpoint**
+   - `POST /api/auth/forgot-password` — public, accepts email and creates a reset request
+   - Generate a short-lived reset token or code and associate it with the user
+   - File: `server/index.js` — add reset token storage and request handler
+
+14. **Add password reset confirmation endpoint**
+   - `POST /api/auth/reset-password` — public, accepts reset token/code and new password
+   - Validate token expiry and one-time usage before updating the password hash
+   - Invalidate the reset token after a successful reset
+   - File: `server/index.js` — add verification and password update logic
+
+15. **Create reset password pages**
+   - `src/pages/ForgotPasswordPage.jsx` — request a reset link or code
+   - `src/pages/ResetPasswordPage.jsx` — submit token/code plus new password
+   - Add routes for `/forgot-password` and `/reset-password`
+
+16. **Update auth API layer for reset flow**
+   - File: `src/api.js` — add `requestPasswordReset()` and `resetPassword()` helpers
+   - Keep the UX simple: show success messaging without revealing whether an email exists
+
 ### Verification
 1. **Authentication flow**: Register new account → login → JWT stored → can access `/cars` and `/admin` (if admin)
 2. **Role-based access**: 
@@ -76,6 +97,7 @@ Add JWT-based authentication with two roles (Admin + User):
 3. **Protected API calls**: Try DELETE car without token → 401 error
 4. **Token persistence**: Refresh page → user stays logged in (token in localStorage)
 5. **User management**: Admin can create users via `/api/users` endpoint with role="admin"
+6. **Password reset flow**: Request reset → receive token/code → set new password → old token invalidated
 
 ## Relevant Files
 - `server/index.js` — Add users table, auth endpoints, middleware
@@ -95,6 +117,5 @@ Add JWT-based authentication with two roles (Admin + User):
 - **localStorage for JWT**: Simple, works with SPA, can add refresh token later
 
 ## Further Considerations
-1. **Password reset flow** — Not in initial plan, but consider email-based reset later
-2. **Token expiration** — Set reasonable expiry (e.g., 24h) and implement refresh token endpoint
-3. **HTTPS in production** — Tokens must be sent over HTTPS only (use secure cookie flag if switching to cookies)
+1. **Token expiration** — Set reasonable expiry (e.g., 24h) and implement refresh token endpoint
+2. **HTTPS in production** — Tokens must be sent over HTTPS only (use secure cookie flag if switching to cookies)
