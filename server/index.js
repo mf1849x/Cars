@@ -561,6 +561,15 @@ function createApp() {
     return res.json({ cars, total: cars.length });
   });
 
+  app.get("/api/cars/find/:year/:model", (req, res) => {
+    const { year, model } = req.params;
+    const cars = db
+      .prepare("SELECT * FROM cars WHERE year = ? AND LOWER(model) = LOWER(?) ORDER BY id")
+      .all(Number(year), model);
+
+    return res.json({ cars, total: cars.length });
+  });
+
   app.get("/api/cars/:id", (req, res) => {
     const car = db.prepare("SELECT * FROM cars WHERE id = ?").get(req.params.id);
 
