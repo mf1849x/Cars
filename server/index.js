@@ -556,6 +556,11 @@ function createApp() {
     });
   });
 
+  app.get("/api/cars/all", (req, res) => {
+    const cars = db.prepare("SELECT * FROM cars ORDER BY id").all();
+    return res.json({ cars, total: cars.length });
+  });
+
   app.get("/api/cars/:id", (req, res) => {
     const car = db.prepare("SELECT * FROM cars WHERE id = ?").get(req.params.id);
 
